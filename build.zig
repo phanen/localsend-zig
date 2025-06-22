@@ -9,6 +9,7 @@ pub fn build(b: *std.Build) void {
         .target = t,
         .optimize = opt,
     });
+    exe.linkLibC();
     // const aio = b.dependency("aio", .{ .target = t, .optimize = opt });
     // exe.root_module.addImport("coro", aio.module("coro"));
     // exe.root_module.addImport("aio", aio.module("aio"));

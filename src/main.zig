@@ -4,13 +4,19 @@ const models = @import("./models.zig");
 const utils = @import("./utils.zig");
 
 pub fn main() !void {
-    const udp = try UDP.init("0.0.0.0", 3000);
+    // const udp = try UDP.init("0.0.0.0", 3000);
+    // try udp.listen();
+    // defer udp.close();
+
+    const udp = try UDP.init("224.0.0.167", 53317);
+    // const udp = try UDP.init("0.0.0.0", 53317);
+    try udp.listen();
     defer udp.close();
 
-    const info = try utils.getMulticastInfo();
-    var buf: [1024]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    var payload = std.ArrayList(u8).init(fba.allocator());
-    defer payload.deinit();
-    try std.json.stringify(info, .{}, payload.writer());
+    // const info = try utils.getMulticastInfo();
+    // var buf: [1024]u8 = undefined;
+    // var fba = std.heap.FixedBufferAllocator.init(&buf);
+    // var payload = std.ArrayList(u8).init(fba.allocator());
+    // defer payload.deinit();
+    // try std.json.stringify(info, .{}, payload.writer());
 }
