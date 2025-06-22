@@ -1,18 +1,15 @@
 const std = @import("std");
-const http = std.http;
+const UDPClient = @import("./udp.zig").UDPClient;
+const posix = std.posix;
+const os = std.os;
+const net = std.net;
+const fs = std.fs;
 
-const Client = struct { address: std.net.Address, socket: std.posix.socket_t };
 pub fn main() !void {
-    const addr = try std.net.Address.parseIp4("127.0.0.1", 3000);
-    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.DGRAM, 0);
-    defer std.posix.close(sock);
-    try std.posix.bind(sock, &addr.any, addr.getOsSockLen());
-
-    var buffer: [1024]u8 = undefined;
-    while (true) {
-        const received_bytes = try std.posix.recvfrom(sock, buffer[0..], 0, null, null);
-        std.debug.print("Received {d} bytes: {s}\n", .{ received_bytes, buffer[0..received_bytes] });
-    }
+    // const gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var client = try UDPClient.init("127.0.0.1", 3000);
+    defer client.close();
+    try client.listen();
 }
 
 test "simple test" {
