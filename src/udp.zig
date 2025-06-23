@@ -16,38 +16,61 @@ pub fn init(ip: []const u8, port: u16) !Self {
     const addr = try net.Address.parseIp4(ip, port);
     const sock = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, 0);
     try posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
-    return .{ .addr = addr, .sock = sock, .buf = undefined };
-}
-pub fn close(self: Self) void {
-    posix.close(self.sock);
-}
 
-pub fn listen(self: Self) !void {
-    try posix.bind(self.sock, &self.addr.any, self.addr.getOsSockLen());
+    try posix.bind(sock, &addr.any, addr.getOsSockLen());
     const request = netinet.ip_mreq{
-        .imr_multiaddr = netinet.struct_in_addr{ .s_addr = self.addr.in.sa.addr },
+        .imr_multiaddr = netinet.struct_in_addr{ .s_addr = addr.in.sa.addr },
         .imr_interface = netinet.struct_in_addr{ .s_addr = std.mem.nativeToBig(u32, netinet.INADDR_ANY) },
     };
-    std.debug.print("DEBUGPRINT[319]: udp.zig:32: request={any}\n", .{request});
-    try posix.setsockopt(self.sock,
+    try posix.setsockopt(sock,
         // posix.SOL.SOCKET,
         posix.IPPROTO.IP, os.linux.IP.ADD_MEMBERSHIP,
         // std.mem.asBytes(&request),
         &std.mem.toBytes(request));
 
     // const flags = try posix.fcntl(self.sock, posix.F.GETFL, 0);
-    // std.debug.print("DEBUGPRINT[323]: udp.zig:38: flags={any}\n", .{flags});
     // try posix.fcntl(self.sock, posix.F.SETFL, posix.SOCK.DGRAM | posix.SOCK.NONBLOCK);
-    var buf = self.buf;
-    while (true) {
-        var sockaddr: posix.sockaddr = undefined;
-        // var addrlen = @sizeOf(sockaddr);
-        var addrlen: u32 = @sizeOf(posix.sockaddr);
-        const bytes = try posix.recvfrom(self.sock, buf[0..], 0, &sockaddr, &addrlen);
-        const addr = net.Address.parseIp4(&sockaddr.data, 0);
-        std.debug.print("<- {any}: [{d}] {s}\n", .{ addr, bytes, buf[0..bytes] });
-        // try self.sendFile("src/main.zig");
-    }
+    return .{ .addr = addr, .sock = sock, .buf = undefined };
+}
+pub fn close(self: Self) void {
+    posix.close(self.sock);
+}
+
+pub fn parseIPFromSockAddr(buf: []u8, addr: *std.posix.sockaddr) ![]const u8 {
+    const addrp: *posix.sockaddr.in = @ptrCast(@alignCast(addr));
+    return try std.fmt.bufPrint(buf, "{}.{}.{}.{}", .{
+        @as(*const [4]u8, @ptrCast(&addrp.addr))[0],
+        @as(*const [4]u8, @ptrCast(&addrp.addr))[1],
+        @as(*const [4]u8, @ptrCast(&addrp.addr))[2],
+        @as(*const [4]u8, @ptrCast(&addrp.addr))[3],
+    });
+}
+// assume we are receiving a multicast packet...
+pub fn recv(self: Self, buf: []u8, src_addr: *posix.sockaddr) !usize {
+    var addrlen: u32 = @sizeOf(posix.sockaddr);
+    const bytes = try posix.recvfrom(self.sock, buf[0..], 0, src_addr, &addrlen);
+    // std.debug.print("DEBUGPRINT[349]: udp.zig:42: src_addr={any}\n", .{src_addr});
+    // const addrp: *posix.sockaddr.in = @ptrCast(@alignCast(src_addr));
+    // const stdout = std.io.getStdErr().writer();
+    // try std.fmt.format(stdout, "<- {}.{}.{}.{}:{}: [{d}] {s}\n", .{
+    //     @as(*const [4]u8, @ptrCast(&addrp.addr))[0],
+    //     @as(*const [4]u8, @ptrCast(&addrp.addr))[1],
+    //     @as(*const [4]u8, @ptrCast(&addrp.addr))[2],
+    //     @as(*const [4]u8, @ptrCast(&addrp.addr))[3],
+    //     std.mem.bigToNative(u16, addrp.port),
+    //     bytes,
+    //     buf[0..bytes],
+    // });
+    return bytes;
+    // try self.sendFile("src/main.zig");
+}
+
+pub fn send(_: Self, buf: []const u8, dest_addr: *posix.sockaddr) !usize {
+    const sock = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, 0);
+    defer posix.close(sock);
+    const bytes = try posix.sendto(sock, buf, 0, dest_addr, @sizeOf(posix.sockaddr));
+    // std.debug.print("-> {any}: [{d}]", .{ dest_addr, bytes });
+    return bytes;
 }
 
 pub fn sendFile(self: Self, filename: []const u8) !void {
@@ -56,8 +79,3 @@ pub fn sendFile(self: Self, filename: []const u8) !void {
     const bytes = try posix.sendto(self.sock, content, 0, &self.addr.any, self.addr.getOsSockLen());
     std.debug.print("-> {any}: [{d}]", .{ self.addr.in, bytes });
 }
-
-// pub fn receive(self: Self) !void {
-//     const bytes = try posix.recvfrom(self.socket, self.buffer[0..], 0, null, null);
-//     std.debug.print("<- {d} bytes: {s}\n", .{ bytes, self.buffer[0..bytes] });
-// }
