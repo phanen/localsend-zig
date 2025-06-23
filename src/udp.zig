@@ -36,15 +36,6 @@ pub fn close(self: Self) void {
     posix.close(self.sock);
 }
 
-pub fn parseIPFromSockAddr(buf: []u8, addr: *std.posix.sockaddr) ![]const u8 {
-    const addrp: *posix.sockaddr.in = @ptrCast(@alignCast(addr));
-    return try std.fmt.bufPrint(buf, "{}.{}.{}.{}", .{
-        @as(*const [4]u8, @ptrCast(&addrp.addr))[0],
-        @as(*const [4]u8, @ptrCast(&addrp.addr))[1],
-        @as(*const [4]u8, @ptrCast(&addrp.addr))[2],
-        @as(*const [4]u8, @ptrCast(&addrp.addr))[3],
-    });
-}
 // assume we are receiving a multicast packet...
 pub fn recv(self: Self, buf: []u8, src_addr: *posix.sockaddr) !usize {
     var addrlen: u32 = @sizeOf(posix.sockaddr);
@@ -65,11 +56,10 @@ pub fn recv(self: Self, buf: []u8, src_addr: *posix.sockaddr) !usize {
     // try self.sendFile("src/main.zig");
 }
 
-pub fn send(_: Self, buf: []const u8, dest_addr: *posix.sockaddr) !usize {
+pub fn send(_: Self, buf: []const u8, dest_addr: *const posix.sockaddr) !usize {
     const sock = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, 0);
     defer posix.close(sock);
     const bytes = try posix.sendto(sock, buf, 0, dest_addr, @sizeOf(posix.sockaddr));
-    // std.debug.print("-> {any}: [{d}]", .{ dest_addr, bytes });
     return bytes;
 }
 
