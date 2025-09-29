@@ -63,7 +63,7 @@ pub fn main() !void {
     const file_path = args[1];
     std.debug.print("DEBUGPRINT[main]: file_path={s}\n", .{file_path});
 
-    const myself: models.MultiCastDto = try utils.makeAnnouncement();
+    const myself: models.MultiCastDto = utils.makeAnnouncement();
     std.debug.print("DEBUGPRINT[main]: Announcement created\n", .{});
     var peers: std.StringHashMapUnmanaged(Peer) = .empty;
     defer peers.deinit(allocator);
