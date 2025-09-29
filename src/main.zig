@@ -26,6 +26,17 @@ const Peer = struct {
 };
 
 pub fn main() !void {
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    if (args.len < 2) {
+        std.debug.print("Usage: {s} <file-to-send>\n", .{args[0]});
+        std.debug.print("No file specified. Exiting.\n", .{});
+        return;
+    }
+    const file_path = args[1];
+    std.debug.print("DEBUGPRINT[339]: {s}:{d}: file_path={any}\n", .{ @src().file, @src().line, file_path });
+
     const myself: models.MultiCastDto = try utils.makeAnnouncement();
     var peers: std.StringHashMapUnmanaged(Peer) = .empty;
     defer peers.deinit(allocator);
@@ -64,17 +75,20 @@ pub fn main() !void {
         const port = peer.info.port orelse 53317;
         const url = try std.fmt.bufPrint(buf[recv_bytes..], "{s}://{s}:{d}/api/localsend/v2/prepare-upload", .{ protocol, ip, port });
         var files = std.StringHashMap(models.FilesDto).init(allocator);
-        const path = try std.fs.realpathAlloc(allocator, "./src/main.zig");
+
+        const path = try std.fs.realpathAlloc(allocator, file_path);
         defer allocator.free(path);
+        const stat = try std.fs.cwd().statFile(file_path);
+        const file_name = std.fs.path.basename(file_path);
+
         const hash = buf[0 .. Sha256.digest_length * 2];
         utils.hexSha256(path, hash);
 
         std.debug.print("DEBUGPRINT[435]: main.zig:71: hash={s}\n", .{hash});
         try files.put(hash, models.FilesDto{
-            .id = hash, // ?????????????
-            // .fileName = path, // TODO: error path traversal detected
-            .fileName = "main.zig",
-            .size = 1234,
+            .id = hash,
+            .fileName = file_name,
+            .size = stat.size,
             .fileType = "application/octet-stream",
             .sha256 = hash,
             .preview = null,
