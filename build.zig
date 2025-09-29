@@ -2,17 +2,16 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const t = b.standardTargetOptions(.{});
-    const opt = b.standardOptimizeOption(.{});
+    const o = b.standardOptimizeOption(.{});
     const exe = b.addExecutable(.{
         .name = "localsend_zig",
-        .root_source_file = b.path("src/main.zig"),
-        .target = t,
-        .optimize = opt,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = t,
+            .optimize = o,
+        }),
     });
     exe.linkLibC();
-    // const aio = b.dependency("aio", .{ .target = t, .optimize = opt });
-    // exe.root_module.addImport("coro", aio.module("coro"));
-    // exe.root_module.addImport("aio", aio.module("aio"));
     b.installArtifact(exe);
 
     const run_cmd = b.addRunArtifact(exe);

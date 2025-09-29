@@ -14,12 +14,12 @@ const Peer = struct {
     const Self = @This();
     pub fn init(info: models.MultiCastDto, addr: std.posix.sockaddr) Self {
         var addr0 = addr;
-        var p: *std.posix.sockaddr.in = @alignCast(@ptrCast(&addr0));
+        var p: *std.posix.sockaddr.in = @ptrCast(@alignCast(&addr0));
         p.port = std.mem.nativeToBig(u16, info.port orelse 53317);
         return .{ .info = info, .addr = addr0 };
     }
     pub fn getIP(self: *const Self, allo: std.mem.Allocator) ![]const u8 {
-        const p = @as(*std.posix.sockaddr.in, @constCast(@alignCast(@ptrCast(&self.addr))));
+        const p = @as(*std.posix.sockaddr.in, @ptrCast(@alignCast(@constCast(&self.addr))));
         const bytes = @as(*const [4]u8, @ptrCast(&p.addr));
         return try std.fmt.allocPrint(allo, "{}.{}.{}.{}", .{ bytes[0], bytes[1], bytes[2], bytes[3] });
     }
@@ -44,7 +44,7 @@ pub fn main() !void {
         if (announce) {
             const peer = Peer.init(info, addr);
             gop.value_ptr.* = peer;
-            const str = try std.json.stringifyAlloc(allocator, myself, .{});
+            const str = try std.json.Stringify.valueAlloc(allocator, myself, .{});
             defer allocator.free(str);
             _ = try udp.send(str, &peer.addr);
             continue;
@@ -80,7 +80,7 @@ pub fn main() !void {
             .preview = null,
             .metadata = null,
         });
-        const str = try std.json.stringifyAlloc(allocator, models.PrepareUploadRequestDto{ .info = myself, .files = files }, .{});
+        const str = try std.json.Stringify.valueAlloc(allocator, models.PrepareUploadRequestDto{ .info = myself, .files = files }, .{});
         defer allocator.free(str);
         _ = try udp.send(str, &peer.addr);
 
@@ -88,15 +88,17 @@ pub fn main() !void {
         const headers = &[_]std.http.Header{
             .{ .name = "Content-Type", .value = "application/json" },
         };
-        var resp_body = std.ArrayList(u8).init(allocator);
-        defer resp_body.deinit();
+        var body: std.Io.Writer.Allocating = .init(allocator);
+        defer body.deinit();
+        try body.ensureUnusedCapacity(64);
         const resp = try client.fetch(.{
             .method = .POST,
             .location = .{ .url = url },
             .extra_headers = headers, //put these here instead of .headers
             .payload = str,
-            .response_storage = .{ .dynamic = &resp_body },
+            .response_writer = &body.writer,
         });
+        var resp_body = body.toArrayList();
         switch (resp.status) {
             .ok => {
                 const r = try std.json.parseFromSlice(models.PrepareUploadResponseDto, allocator, resp_body.items, .{});
@@ -132,8 +134,9 @@ pub fn main() !void {
                         .location = .{ .url = url0 },
                         .extra_headers = headers,
                         .payload = content,
-                        .response_storage = .{ .dynamic = &resp_body },
+                        .response_writer = &body.writer,
                     });
+                    resp_body = body.toArrayList();
 
                     std.debug.print("DEBUGPRINT[440]: main.zig:128: resp0={any}\n", .{resp0});
 
