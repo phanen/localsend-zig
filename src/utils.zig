@@ -1,34 +1,51 @@
 const std = @import("std");
-const models = @import("./models.zig");
+const model = @import("./model.zig");
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
-var alias_buf: [16]u8 = undefined;
-var fingerprint: [64]u8 = undefined;
-pub fn makeAnnouncement() models.MultiCastDto {
-    const alias = std.fmt.bufPrint(&alias_buf, "{s}_{d}", .{
-        std.posix.getenv("USER") orelse "random",
-        std.time.timestamp() & 0xffff,
-    }) catch "unknown";
-    std.crypto.random.bytes(fingerprint[0 .. fingerprint.len / 2]);
-    const hex = std.fmt.bytesToHex(fingerprint[0 .. fingerprint.len / 2], .upper);
-    std.mem.copyForwards(u8, &fingerprint, &hex);
-    return .{
-        .alias = alias,
-        .version = "2.1",
-        .deviceModel = "linux",
-        .deviceType = "headless",
-        .fingerprint = fingerprint[0..hex.len],
-        .port = 53317,
-        .protocol = "http",
-        .download = false,
-        .announce = true,
-        .announcement = true,
-    };
+pub fn sha256File(allocator: std.mem.Allocator, file_path: []const u8) ![]const u8 {
+    const file = try std.fs.cwd().openFile(file_path, .{});
+    defer file.close();
+
+    var hasher = Sha256.init(.{});
+    var buffer: [256]u8 = undefined;
+
+    while (true) {
+        const bytes_read = try file.readAll(&buffer);
+        if (bytes_read == 0) break;
+        hasher.update(buffer[0..bytes_read]);
+    }
+
+    var digest: [Sha256.digest_length]u8 = undefined;
+    hasher.final(&digest);
+
+    const hex = std.fmt.bytesToHex(&digest, .lower);
+    return try allocator.dupe(u8, &hex);
 }
 
-pub fn hexSha256(in: []const u8, out: *[Sha256.digest_length * 2]u8) void {
-    var digest: [Sha256.digest_length]u8 = undefined;
-    Sha256.hash(in, &digest, .{});
-    const hex = std.fmt.bytesToHex(&digest, .upper);
-    std.mem.copyForwards(u8, out, &hex);
+const MimeMap = std.StaticStringMap([]const u8).initComptime(.{
+    .{ ".jpg", "image/jpeg" },
+    .{ ".jpeg", "image/jpeg" },
+    .{ ".png", "image/png" },
+    .{ ".gif", "image/gif" },
+    .{ ".mp4", "video/mp4" },
+    .{ ".avi", "video/x-msvideo" },
+    .{ ".mp3", "audio/mpeg" },
+    .{ ".wav", "audio/wav" },
+    .{ ".pdf", "application/pdf" },
+    .{ ".txt", "text/plain" },
+    .{ ".html", "text/html" },
+    .{ ".zip", "application/zip" },
+    .{ ".tar", "application/x-tar" },
+});
+
+pub fn getMimeType(filename: []const u8) []const u8 {
+    const ext = std.fs.path.extension(filename);
+    return MimeMap.get(ext) orelse "application/octet-stream";
+}
+
+pub fn generateId(allocator: std.mem.Allocator) ![]u8 {
+    var bytes: [16]u8 = undefined;
+    std.crypto.random.bytes(&bytes);
+    const hex = std.fmt.bytesToHex(&bytes, .lower);
+    return try allocator.dupe(u8, &hex);
 }
