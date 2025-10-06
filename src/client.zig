@@ -11,9 +11,6 @@ pub const Client = struct {
     http_client: http.Client,
     info: model.MultiCastDto,
 
-    var alias_buf: [64]u8 = undefined;
-    var fingerprint: [64]u8 = undefined;
-
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) !Self {

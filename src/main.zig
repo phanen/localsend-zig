@@ -39,8 +39,7 @@ pub fn logFn(
 const log = std.log.scoped(.main);
 
 var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
-const allocator = gpa.allocator();
-var buf: [1024]u8 = undefined;
+const allocator = std.heap.page_allocator;
 
 pub fn main() !void {
     log.info("Sender Mode", .{});

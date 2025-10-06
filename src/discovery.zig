@@ -93,6 +93,7 @@ pub const Peer = struct {
 pub const Registry = struct {
     peers: std.StringHashMap(Peer),
     allocator: std.mem.Allocator,
+    mutex: std.Thread.Mutex,
 
     const Self = @This();
     const log = std.log.scoped(.registry);
@@ -101,6 +102,7 @@ pub const Registry = struct {
         return .{
             .allocator = allocator,
             .peers = std.StringHashMap(Peer).init(allocator),
+            .mutex = .{},
         };
     }
 
@@ -111,7 +113,9 @@ pub const Registry = struct {
     }
 
     /// Register or update a peer
-    pub fn registerPeer(self: *Self, info: model.MultiCastDto, addr: *const net.Address) !*Peer {
+    pub fn registerPeer(self: *Self, info: model.MultiCastDto, addr: *const net.Address) !*const Peer {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const gop = try self.peers.getOrPut(info.fingerprint);
         if (gop.found_existing) {
             var peer = gop.value_ptr;
@@ -126,6 +130,8 @@ pub const Registry = struct {
 
     /// Remove a specific peer
     pub fn removePeer(self: *Self, fingerprint: []const u8) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         if (self.peers.fetchRemove(fingerprint)) |kv| {
             log.info("Removed peer: {s}", .{kv.value.info.alias});
             return true;
@@ -135,6 +141,8 @@ pub const Registry = struct {
 
     /// Clean up stale peers (not seen for a while)
     pub fn cleanupStalePeers(self: *Self) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
         var it = self.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.isStale(Cons.STALE_THRESHOLD_SECONDS)) {
@@ -145,7 +153,7 @@ pub const Registry = struct {
     }
 
     /// Get a peer by fingerprint
-    pub fn getPeer(self: *Self, fingerprint: []const u8) ?*Peer {
+    pub fn getPeer(self: *Self, fingerprint: []const u8) ?*const Peer {
         return self.peers.getPtr(fingerprint);
     }
 
@@ -215,9 +223,9 @@ pub const Manager = struct {
     }
 
     pub fn run(self: *Self) !void {
-        // _ = try std.Thread.spawn(.{}, listenThread.run, .{self});
-        try self.listenMultiCast();
-        // while (true) std.Thread.sleep(5 * std.time.ns_per_s);
+        _ = try std.Thread.spawn(.{}, listenMultiCast, .{self});
+        // try self.listenMultiCast();
+        while (true) std.Thread.sleep(5 * std.time.ns_per_s);
     }
 
     const tlog = std.log.scoped(.discovery);
@@ -254,8 +262,7 @@ pub const Manager = struct {
         }
     }
 
-    fn handleAnnounce(self: *Manager, peer_info: model.MultiCastDto, addr: *const net.Address) !void {
-        // TODO: racing?
+    fn handleAnnounce(self: *Self, peer_info: model.MultiCastDto, addr: *const net.Address) !void {
         const peer = try self.registry.registerPeer(peer_info, addr);
         const me_str = try std.json.Stringify.valueAlloc(self.allocator, self.client.info, .{});
         tlog.info("{f}", .{self.registry});
@@ -263,7 +270,7 @@ pub const Manager = struct {
     }
 
     /// Periodic cleanup wrapper that checks if it's time to run cleanup
-    fn cleanupStalePeers(self: *Manager) !void {
+    fn cleanupStalePeers(self: *Self) !void {
         const now = std.time.timestamp();
         if (now - self.last_cleanup_time > Cons.CLEANUP_INTERVAL_SECONDS) {
             try self.registry.cleanupStalePeers();
