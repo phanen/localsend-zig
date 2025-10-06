@@ -1,5 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
+const net = std.net;
 const model = @import("./model.zig");
 const network = @import("./network.zig");
 const Cons = @import("./main.zig").Cons;
@@ -8,7 +9,7 @@ const Client = @import("./client.zig").Client;
 /// Represents a LocalSend peer with enhanced functionality
 pub const Peer = struct {
     info: model.MultiCastDto,
-    addr: posix.sockaddr,
+    addr: net.Address,
     last_seen: i64, // Unix timestamp
     status: Status = .online,
 
@@ -16,34 +17,25 @@ pub const Peer = struct {
 
     pub const Status = enum { online, offline };
 
-    pub fn init(info: model.MultiCastDto, addr: posix.sockaddr) !Self {
-        var addr0 = addr;
+    pub fn init(info: model.MultiCastDto, from_addr: *const net.Address) !Self {
         const port = info.port orelse Cons.PORT;
-        switch (addr.family) {
-            posix.AF.INET => setPort(posix.sockaddr.in, &addr0, port),
-            posix.AF.INET6 => setPort(posix.sockaddr.in6, &addr0, port),
-            else => return error.UnsupportedAddressFamily,
-        }
+        var addr = net.Address.initPosix(@alignCast(&from_addr.any));
+        addr.setPort(port);
         return .{
             .info = info,
-            .addr = addr0,
+            .addr = addr,
             .last_seen = std.time.timestamp(),
         };
     }
 
     pub fn deinit(_: *Self) void {}
 
-    fn setPort(comptime T: type, addr: *posix.sockaddr, port: u16) void {
-        const p: *T = @ptrCast(@alignCast(addr));
-        p.port = std.mem.nativeToBig(u16, port);
-    }
-
-    pub fn getIP(self: *const Self, alloc: std.mem.Allocator) ![]const u8 {
-        return network.formatSockaddrAlloc(alloc, &self.addr, false); // IP only, no port
+    pub fn getPort(self: *const Self) u16 {
+        return self.addr.getPort();
     }
 
     pub fn getIPWithPort(self: *const Self, buf: []u8) ![]const u8 {
-        return network.formatSockaddr(buf, &self.addr, true);
+        return std.fmt.bufPrint(buf, "{f}", .{self.addr});
     }
 
     /// Update the last seen timestamp and mark as online
@@ -82,14 +74,18 @@ pub const Peer = struct {
         return "🖥️"; // default to desktop icon
     }
 
-    /// TODO: we can only use {f}?
+    /// TODO: std.fmt.alt to use multiple format fn https://github.com/ziglang/zig/blob/150169f1e0cf08d4b76fed81fc205a63177b6e01/lib/std/Uri.zig#L66
     pub fn format(self: *const Self, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        var ip_buf: [64]u8 = undefined;
-        const ip_str = self.getIPWithPort(&ip_buf) catch "unknown";
+        var buf: [64]u8 = undefined;
+        const ip = self.getIPWithPort(&buf) catch "unknown";
         const time_diff = std.time.timestamp() - self.last_seen;
         try w.print("{s} {s}\n", .{ self.getDeviceIcon(), self.info.alias });
-        try w.print("   IP: {s} | Status: {s}\n", .{ ip_str, self.getStatusString() });
-        try w.print("   Device: {s} {s} | Version: {s}\n", .{ self.info.deviceType orelse "unknown", self.info.deviceModel orelse "unknown", self.info.version orelse "unknown" });
+        try w.print("   IP: {s} | Status: {s}\n", .{ ip, self.getStatusString() });
+        try w.print("   Device: {s} {s} | Version: {s}\n", .{
+            self.info.deviceType orelse "unknown",
+            self.info.deviceModel orelse "unknown",
+            self.info.version orelse "unknown",
+        });
         try w.print("   Last seen: {}s ago | Fingerprint: {s}", .{ time_diff, self.info.fingerprint[0..8] });
     }
 };
@@ -115,7 +111,7 @@ pub const Registry = struct {
     }
 
     /// Register or update a peer
-    pub fn registerPeer(self: *Self, info: model.MultiCastDto, addr: posix.sockaddr) !*Peer {
+    pub fn registerPeer(self: *Self, info: model.MultiCastDto, addr: *const net.Address) !*Peer {
         const gop = try self.peers.getOrPut(info.fingerprint);
         if (gop.found_existing) {
             var peer = gop.value_ptr;
@@ -241,18 +237,15 @@ pub const Manager = struct {
             // _ = try multicast.send(me_str);
             const peer_announce = peer_info.announce orelse peer_info.announcement orelse false;
             if (peer_announce) {
-                try self.handleAnnounce(peer_info, addr);
+                const netaddr = net.Address.initPosix(@alignCast(&addr));
+                try self.handleAnnounce(peer_info, &netaddr);
                 continue;
             }
             const peer = self.registry.getPeer(peer_info.fingerprint) orelse {
                 tlog.info("Unknown peer, skipping", .{});
                 continue;
             };
-            const ip = try peer.getIP(self.allocator);
-            defer self.allocator.free(ip);
-            const port = peer.info.port orelse Cons.PORT;
-            tlog.info("Sending file to {s}:{d}", .{ ip, port });
-            try self.client.sendFiles(ip, port, self.send_paths, false);
+            try self.client.sendFiles(&peer.addr, self.send_paths, false);
             // const stdin: std.fs.File = .stdin();
             // var stdio_buffer: [1024]u8 = undefined;
             // var file_reader: std.fs.File.Reader = stdin.reader(&stdio_buffer);
@@ -261,12 +254,12 @@ pub const Manager = struct {
         }
     }
 
-    fn handleAnnounce(self: *Manager, peer_info: model.MultiCastDto, addr: posix.sockaddr) !void {
+    fn handleAnnounce(self: *Manager, peer_info: model.MultiCastDto, addr: *const net.Address) !void {
         // TODO: racing?
         const peer = try self.registry.registerPeer(peer_info, addr);
         const me_str = try std.json.Stringify.valueAlloc(self.allocator, self.client.info, .{});
         tlog.info("{f}", .{self.registry});
-        _ = try network.udpSend(me_str, &peer.addr);
+        _ = try network.udpSend(me_str, &peer.addr.any);
     }
 
     /// Periodic cleanup wrapper that checks if it's time to run cleanup

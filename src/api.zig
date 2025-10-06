@@ -1,4 +1,5 @@
 const std = @import("std");
+const net = std.net;
 
 /// LocalSend Protocol v2.1 API routes
 /// Reference: https://github.com/localsend/protocol
@@ -35,12 +36,11 @@ pub const ApiRoute = enum {
     pub fn url(
         self: ApiRoute,
         allocator: std.mem.Allocator,
-        ip: []const u8,
-        port: u16,
+        addr: *const net.Address,
         https: bool,
     ) ![]u8 {
         const scheme = if (https) "https" else "http";
-        return std.fmt.allocPrint(allocator, "{s}://{s}:{d}{s}", .{ scheme, ip, port, self.path() });
+        return std.fmt.allocPrint(allocator, "{s}://{f}{s}", .{ scheme, addr, self.path() });
     }
 
     /// Query parameter key-value pair for URL building
@@ -49,13 +49,12 @@ pub const ApiRoute = enum {
     pub fn urlWithQuery(
         self: ApiRoute,
         allocator: std.mem.Allocator,
-        ip: []const u8,
-        port: u16,
+        addr: *const net.Address,
         https: bool,
         query_params: []const QueryParam,
     ) ![]u8 {
         if (query_params.len == 0) {
-            return self.url(allocator, ip, port, https);
+            return self.url(allocator, addr, https);
         }
 
         const scheme = if (https) "https" else "http";
@@ -64,7 +63,7 @@ pub const ApiRoute = enum {
 
         // Build base URL
         // fixme: deprecatedd
-        try url_buf.writer(allocator).print("{s}://{s}:{d}{s}?", .{ scheme, ip, port, self.path() });
+        try url_buf.writer(allocator).print("{s}://{f}{s}?", .{ scheme, addr, self.path() });
 
         // Add query parameters
         for (query_params, 0..) |param, i| {
@@ -179,11 +178,11 @@ test "QueryParams.fromTarget with path and query" {
 test "ApiRoute.url generates correct URL" {
     const allocator = std.testing.allocator;
 
-    const http_url = try ApiRoute.info.url(allocator, "192.168.1.100", 53317, false);
+    const http_url = try ApiRoute.info.url(allocator, &try net.Address.parseIp("192.168.1.100", 53317), false);
     defer allocator.free(http_url);
     try std.testing.expectEqualStrings("http://192.168.1.100:53317/api/localsend/v2/info", http_url);
 
-    const https_url = try ApiRoute.prepare_upload.url(allocator, "10.0.0.5", 8080, true);
+    const https_url = try ApiRoute.prepare_upload.url(allocator, &try net.Address.parseIp("10.0.0.5", 8080), true);
     defer allocator.free(https_url);
     try std.testing.expectEqualStrings("https://10.0.0.5:8080/api/localsend/v2/prepare-upload", https_url);
 }
@@ -192,19 +191,19 @@ test "ApiRoute.urlWithQuery generates URL with query params" {
     const allocator = std.testing.allocator;
 
     // Test with no query params
-    const url_no_query = try ApiRoute.upload.urlWithQuery(allocator, "192.168.1.100", 53317, false, &.{});
+    const url_no_query = try ApiRoute.upload.urlWithQuery(allocator, &try net.Address.parseIp("192.168.1.100", 53317), false, &.{});
     defer allocator.free(url_no_query);
     try std.testing.expectEqualStrings("http://192.168.1.100:53317/api/localsend/v2/upload", url_no_query);
 
     // Test with one query param
-    const url_one = try ApiRoute.upload.urlWithQuery(allocator, "192.168.1.100", 53317, false, &.{
+    const url_one = try ApiRoute.upload.urlWithQuery(allocator, &try net.Address.parseIp("192.168.1.100", 53317), false, &.{
         .{ "sessionId", "abc123" },
     });
     defer allocator.free(url_one);
     try std.testing.expectEqualStrings("http://192.168.1.100:53317/api/localsend/v2/upload?sessionId=abc123", url_one);
 
     // Test with multiple query params
-    const url_multi = try ApiRoute.upload.urlWithQuery(allocator, "10.0.0.5", 8080, true, &.{
+    const url_multi = try ApiRoute.upload.urlWithQuery(allocator, &try net.Address.parseIp("10.0.0.5", 8080), true, &.{
         .{ "sessionId", "test-session" },
         .{ "fileId", "file123" },
         .{ "token", "secret-token" },

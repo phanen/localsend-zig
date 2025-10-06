@@ -31,12 +31,12 @@ pub const Client = struct {
 
     pub fn sendFiles(
         self: *Self,
-        ip: []const u8,
-        port: u16,
+        addr: *const std.net.Address,
         paths: []const []const u8,
         https: bool,
     ) !void {
-        const url = try api.ApiRoute.prepare_upload.url(self.allocator, ip, port, https);
+        log.info("Sending file to {f}", .{addr});
+        const url = try api.ApiRoute.prepare_upload.url(self.allocator, addr, https);
         defer self.allocator.free(url);
         log.info("Prepare upload URL: {s}", .{url});
 
@@ -73,7 +73,7 @@ pub const Client = struct {
             const token = entry.value_ptr.*;
             const file_info = prep.files.get(file_id) orelse continue;
             const path = file_info.path.?;
-            try self.uploadFile(ip, port, https, session_id, file_id, token, path);
+            try self.uploadFile(addr, https, session_id, file_id, token, path);
         }
 
         log.info("All files uploaded successfully", .{});
@@ -81,8 +81,7 @@ pub const Client = struct {
 
     fn uploadFile(
         self: *Self,
-        ip: []const u8,
-        port: u16,
+        addr: *const std.net.Address,
         use_https: bool,
         session_id: []const u8,
         file_id: []const u8,
@@ -92,8 +91,7 @@ pub const Client = struct {
         log.info("Uploading {s} ({s})", .{ path, file_id });
         const url = try api.ApiRoute.upload.urlWithQuery(
             self.allocator,
-            ip,
-            port,
+            addr,
             use_https,
             &.{
                 .{ "sessionId", session_id },
@@ -137,11 +135,7 @@ pub const Client = struct {
         });
         const resp_body = try buffer.toOwnedSlice();
         log.info("HTTP response status={}, body={s}", .{ resp.status, resp_body });
-        return .{
-            .allocator = self.allocator,
-            .status = resp.status,
-            .body = resp_body,
-        };
+        return HttpResponse.init(self.allocator, resp.status, resp_body);
     }
 };
 
@@ -151,7 +145,12 @@ const HttpResponse = struct {
     status: http.Status,
     body: []const u8,
 
-    pub fn deinit(self: *const HttpResponse) void {
+    const Self = @This();
+    pub fn init(allocator: std.mem.Allocator, status: http.Status, body: []const u8) Self {
+        return .{ .allocator = allocator, .status = status, .body = body };
+    }
+
+    pub fn deinit(self: *const Self) void {
         self.allocator.free(self.body);
     }
 };
