@@ -44,7 +44,7 @@ const DownloadSession = struct {
 /// LocalSend HTTP/HTTPS server for receiving files
 pub const Server = struct {
     allocator: std.mem.Allocator,
-    address: std.net.Address,
+    addr: std.net.Address,
     device_info: model.InfoDto,
     upload_sessions: std.StringHashMap(UploadSession),
     download_sessions: std.StringHashMap(DownloadSession),
@@ -53,28 +53,27 @@ pub const Server = struct {
 
     const Self = @This();
 
-    pub fn init(
-        allocator: std.mem.Allocator,
-        port: u16,
-        device_info: model.InfoDto,
-        save_dir: []const u8,
-        https_enabled: bool,
-    ) !Self {
-        const address = std.net.Address.initIp4(.{ 0, 0, 0, 0 }, port);
-
+    pub fn init(allocator: std.mem.Allocator, info: *const model.MultiCastDto, save_dir: []const u8) !Self {
+        const addr = std.net.Address.initIp4(.{ 0, 0, 0, 0 }, info.port.?);
         // Ensure save directory exists
         std.fs.cwd().makePath(save_dir) catch |err| {
             if (err != error.PathAlreadyExists) return err;
         };
-
         return .{
             .allocator = allocator,
-            .address = address,
-            .device_info = device_info,
-            .upload_sessions = std.StringHashMap(UploadSession).init(allocator),
-            .download_sessions = std.StringHashMap(DownloadSession).init(allocator),
+            .addr = addr,
+            .device_info = .{
+                .alias = info.alias,
+                .version = info.version.?,
+                .deviceModel = info.deviceModel,
+                .deviceType = info.deviceType,
+                .fingerprint = info.fingerprint,
+                .download = false,
+            },
+            .upload_sessions = .init(allocator),
+            .download_sessions = .init(allocator),
             .save_dir = save_dir,
-            .https_enabled = https_enabled,
+            .https_enabled = false,
         };
     }
 
@@ -94,13 +93,13 @@ pub const Server = struct {
 
     /// Start listening for connections
     pub fn listen(self: *Self) !void {
-        var net_server = try self.address.listen(.{
+        var net_server = try self.addr.listen(.{
             .reuse_address = true,
             .kernel_backlog = 128,
         });
         defer net_server.deinit();
 
-        log.info("Server listening on {any} (HTTPS: {})", .{ self.address, self.https_enabled });
+        log.info("Server listening on {any} (HTTPS: {})", .{ self.addr, self.https_enabled });
 
         while (true) {
             const connection = net_server.accept() catch |err| {

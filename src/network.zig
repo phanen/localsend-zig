@@ -7,12 +7,11 @@ const netinet = @cImport({
 });
 
 /// Send a UDP packet to a specific address
-pub fn udpSend(buf: []const u8, dest_addr: *const posix.sockaddr) !usize {
+pub fn udpSend(dest_addr: *const net.Address, buf: []const u8) !usize {
     const sock = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, 0);
     defer posix.close(sock);
-    const addr = net.Address.initPosix(@alignCast(dest_addr));
-    const bytes = try posix.sendto(sock, buf, 0, dest_addr, addr.getOsSockLen());
-    std.log.scoped(.udp).info("Sent {d} bytes to {f}", .{ bytes, addr });
+    const bytes = try posix.sendto(sock, buf, 0, &dest_addr.any, dest_addr.getOsSockLen());
+    std.log.scoped(.udp).info("Sent {d} bytes to {f}", .{ bytes, dest_addr });
     return bytes;
 }
 

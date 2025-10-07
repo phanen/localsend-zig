@@ -1,16 +1,13 @@
 const std = @import("std");
-const model = @import("./model.zig");
 const discovery = @import("./discovery.zig");
-const network = @import("./network.zig");
-const Server = @import("./server.zig").Server;
-const api = @import("./api.zig");
 
 pub const Cons = struct {
-    pub const PORT: u16 = 53317; // default multicast port
+    pub const PORT: u16 = 53317; // default multicast/tcp port
     pub const PROTOCOL = "http";
     pub const MULTICAST_IP = "224.0.0.167";
     pub const CLEANUP_INTERVAL_SECONDS = 30;
     pub const STALE_THRESHOLD_SECONDS = 120;
+    pub const SAVE_DIR = "received_files";
 };
 
 // Set up custom log handler and log level
@@ -54,37 +51,4 @@ pub fn main() !void {
     var manager = try discovery.Manager.init(allocator, paths);
     defer manager.deinit();
     try manager.run();
-}
-
-fn recv(info: model.MultiCastDto) !void {
-    // Create device info for server
-    const device_info = model.InfoDto{
-        .alias = info.alias,
-        .version = info.version.?,
-        .deviceModel = info.deviceModel,
-        .deviceType = info.deviceType,
-        .fingerprint = info.fingerprint,
-        .download = false,
-    };
-
-    // Start HTTP server in a separate thread
-    const ServerThread = struct {
-        fn run(srv: *Server) void {
-            srv.listen() catch |err| {
-                log.err("Server error: {}", .{err});
-            };
-        }
-    };
-
-    var srv = try Server.init(
-        allocator,
-        Cons.PORT,
-        device_info,
-        "received_files",
-        false, // HTTP only for now
-    );
-    defer srv.deinit();
-
-    const thread = try std.Thread.spawn(.{}, ServerThread.run, .{&srv});
-    thread.detach();
 }

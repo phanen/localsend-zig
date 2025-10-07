@@ -5,6 +5,7 @@ const model = @import("./model.zig");
 const network = @import("./network.zig");
 const Cons = @import("./main.zig").Cons;
 const Client = @import("./client.zig").Client;
+const Server = @import("./server.zig").Server;
 
 /// Represents a LocalSend peer with enhanced functionality
 pub const Peer = struct {
@@ -201,49 +202,57 @@ pub const Manager = struct {
     allocator: std.mem.Allocator,
     last_cleanup_time: i64,
     client: Client,
+    // server: Server,
     registry: Registry,
     send_paths: []const []const u8,
     multicast: network.Multicast,
+    info: model.MultiCastDto,
 
     const Self = @This();
     const log = std.log.scoped(.manager);
 
     pub fn init(allocator: std.mem.Allocator, paths: []const []const u8) !Self {
+        const info = try model.MultiCastDto.init(allocator);
         return .{
             .allocator = allocator,
             .last_cleanup_time = std.time.timestamp(),
-            .client = try .init(allocator),
+            .client = try .init(allocator, info),
+            // .server = try .init(allocator, info, Cons.SAVE_DIR),
             .registry = .init(allocator),
             .send_paths = paths,
             .multicast = try .init(try net.Address.parseIp(Cons.MULTICAST_IP, Cons.PORT)),
+            .info = info,
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.multicast.close();
         self.client.deinit();
+        // self.server.deinit();
         self.registry.deinit();
+        self.info.deinit(self.allocator);
     }
 
     pub fn run(self: *Self) !void {
         // const thread = try std.Thread.spawn(.{}, listenMultiCast, .{self});
         _ = try std.Thread.spawn(.{}, listenMultiCast, .{self});
+        // const thread = try std.Thread.spawn(.{}, listenTcp, .{&self.server});
+        // thread.detach();
         // try self.listenMultiCast();
         // announce once
         // thread.join();
         while (true) {
-            try self.sendAnnouncement();
+            try self.sendAnnounce();
             std.Thread.sleep(5 * std.time.ns_per_s);
         }
     }
 
-    pub fn sendAnnouncement(self: *const Self) !void {
-        const me = try std.json.Stringify.valueAlloc(self.allocator, self.client.info, .{});
-        defer self.allocator.free(me);
-        _ = try self.multicast.send(me);
-    }
-
     const tlog = std.log.scoped(.discovery);
+    fn listenTcp(srv: *Server) !void {
+        srv.listen() catch |err| {
+            log.err("Server error: {}", .{err});
+        };
+    }
     fn listenMultiCast(self: *Self) !void {
         while (true) {
             tlog.info("Waiting for peers...", .{});
@@ -262,7 +271,7 @@ pub const Manager = struct {
                 tlog.info("Unknown peer, skipping", .{});
                 continue;
             };
-            try self.client.sendFiles(&peer.addr, self.send_paths, false);
+            try self.client.sendFiles(&peer.addr, self.send_paths);
             // const stdin: std.fs.File = .stdin();
             // var stdio_buffer: [1024]u8 = undefined;
             // var file_reader: std.fs.File.Reader = stdin.reader(&stdio_buffer);
@@ -271,11 +280,20 @@ pub const Manager = struct {
         }
     }
 
+    // TODO: no alloc
+    fn sendAnnounce(self: *const Self) !void {
+        const me = try std.json.Stringify.valueAlloc(self.allocator, self.info, .{});
+        defer self.allocator.free(me);
+        _ = try self.multicast.send(me);
+    }
+
     fn handleAnnounce(self: *Self, peer_info: model.MultiCastDto, addr: *const net.Address) !void {
         const peer = try self.registry.registerPeer(peer_info, addr);
-        const me_str = try std.json.Stringify.valueAlloc(self.allocator, self.client.info, .{});
+        const me = try std.json.Stringify.valueAlloc(self.allocator, self.info, .{});
+        defer self.allocator.free(me);
         tlog.info("{f}", .{self.registry});
-        _ = try network.udpSend(me_str, &peer.addr.any);
+        try self.client.register(&peer.addr, me);
+        _ = try network.udpSend(&peer.addr, me); // fallback
     }
 
     /// Periodic cleanup wrapper that checks if it's time to run cleanup

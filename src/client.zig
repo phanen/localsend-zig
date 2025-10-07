@@ -5,35 +5,41 @@ const api = @import("./api.zig");
 
 const log = std.log.scoped(.client);
 
-/// HTTP client for sending files to peers
+/// HTTP client
 pub const Client = struct {
     allocator: std.mem.Allocator,
     http_client: http.Client,
     info: model.MultiCastDto,
+    tls: bool,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator) !Self {
+    pub fn init(allocator: std.mem.Allocator, info: model.MultiCastDto) !Self {
         return .{
             .allocator = allocator,
             .http_client = .{ .allocator = allocator },
-            .info = try .init(allocator),
+            .info = info,
+            .tls = false,
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.http_client.deinit();
-        self.info.deinit(self.allocator);
+    }
+
+    pub fn register(self: *Self, addr: *const std.net.Address, buf: []const u8) !void {
+        const url = try api.ApiRoute.register.url(self.allocator, addr, self.tls);
+        const resp = try self.sendHttpRequest(.POST, url, buf);
+        defer resp.deinit();
     }
 
     pub fn sendFiles(
         self: *Self,
         addr: *const std.net.Address,
         paths: []const []const u8,
-        https: bool,
     ) !void {
         log.info("Sending file to {f}", .{addr});
-        const url = try api.ApiRoute.prepare_upload.url(self.allocator, addr, https);
+        const url = try api.ApiRoute.prepare_upload.url(self.allocator, addr, self.tls);
         defer self.allocator.free(url);
         log.info("Prepare upload URL: {s}", .{url});
 
@@ -70,7 +76,7 @@ pub const Client = struct {
             const token = entry.value_ptr.*;
             const file_info = prep.files.get(file_id) orelse continue;
             const path = file_info.path.?;
-            try self.uploadFile(addr, https, session_id, file_id, token, path);
+            try self.uploadFile(addr, session_id, file_id, token, path);
         }
 
         log.info("All files uploaded successfully", .{});
@@ -79,7 +85,6 @@ pub const Client = struct {
     fn uploadFile(
         self: *Self,
         addr: *const std.net.Address,
-        use_https: bool,
         session_id: []const u8,
         file_id: []const u8,
         token: []const u8,
@@ -89,7 +94,7 @@ pub const Client = struct {
         const url = try api.ApiRoute.upload.urlWithQuery(
             self.allocator,
             addr,
-            use_https,
+            self.tls,
             &.{
                 .{ "sessionId", session_id },
                 .{ "fileId", file_id },
