@@ -2,6 +2,7 @@ const std = @import("std");
 const model = @import("./model.zig");
 const utils = @import("./utils.zig");
 const api = @import("./api.zig");
+const Cons = @import("./main.zig").Cons;
 
 const log = std.log.scoped(.server);
 
@@ -49,11 +50,12 @@ pub const Server = struct {
     upload_sessions: std.StringHashMap(UploadSession),
     download_sessions: std.StringHashMap(DownloadSession),
     save_dir: []const u8,
-    https_enabled: bool,
+    tls: bool,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, info: *const model.MultiCastDto, save_dir: []const u8) !Self {
+    pub fn init(allocator: std.mem.Allocator, info: *const model.MultiCastDto) !Self {
+        const save_dir = Cons.SAVE_DIR;
         const addr = std.net.Address.initIp4(.{ 0, 0, 0, 0 }, info.port.?);
         // Ensure save directory exists
         std.fs.cwd().makePath(save_dir) catch |err| {
@@ -73,7 +75,7 @@ pub const Server = struct {
             .upload_sessions = .init(allocator),
             .download_sessions = .init(allocator),
             .save_dir = save_dir,
-            .https_enabled = false,
+            .tls = false,
         };
     }
 
@@ -99,28 +101,28 @@ pub const Server = struct {
         });
         defer net_server.deinit();
 
-        log.info("Server listening on {any} (HTTPS: {})", .{ self.addr, self.https_enabled });
+        log.info("Server listening on {s}://{f}", .{ if (self.tls) "https" else "http", self.addr });
 
         while (true) {
-            const connection = net_server.accept() catch |err| {
+            const conn = net_server.accept() catch |err| {
                 log.err("Error accepting connection: {}", .{err});
                 continue;
             };
 
-            self.handleConnection(connection) catch |err| {
+            self.handleConnection(conn) catch |err| {
                 log.err("Error handling connection: {}", .{err});
             };
         }
     }
 
-    fn handleConnection(self: *Self, connection: std.net.Server.Connection) !void {
-        defer connection.stream.close();
+    fn handleConnection(self: *Self, conn: std.net.Server.Connection) !void {
+        defer conn.stream.close();
 
         var read_buffer: [8192]u8 = undefined;
         var write_buffer: [8192]u8 = undefined;
 
-        var reader = connection.stream.reader(&read_buffer);
-        var writer = connection.stream.writer(&write_buffer);
+        var reader = conn.stream.reader(&read_buffer);
+        var writer = conn.stream.writer(&write_buffer);
 
         var server = std.http.Server.init(reader.interface(), &writer.interface);
 
@@ -137,61 +139,62 @@ pub const Server = struct {
         self.handleRequest(&request) catch |err| {
             log.err("Error handling request: {}", .{err});
             // Try to send error response
-            self.sendResponse(&request, .internal_server_error, "text/plain", "Internal Server Error") catch {};
+            self.respond(&request, .internal_server_error, "text/plain", "Internal Server Error") catch {};
         };
     }
 
-    fn handleRequest(self: *Self, request: *std.http.Server.Request) !void {
-        const target = request.head.target;
-        const method = request.head.method;
+    fn handleRequest(self: *Self, req: *std.http.Server.Request) !void {
+        const method = req.head.method;
+        const target = req.head.target;
 
         log.info("{s} {s}", .{ @tagName(method), target });
 
         const route = api.ApiRoute.match(target) orelse {
-            return self.sendResponse(request, .not_found, "text/plain", "Not Found");
+            return self.respond(req, .not_found, "text/plain", "Not Found");
         };
 
         switch (route) {
-            .info => try self.handleInfo(request),
-            .register => try self.handleRegister(request),
-            .prepare_upload => try self.handlePrepareUpload(request),
-            .upload => try self.handleUpload(request),
-            .cancel => try self.handleCancel(request),
-            .prepare_download => try self.handlePrepareDownload(request),
-            .download => try self.handleDownload(request),
+            .info => try self.handleInfo(req),
+            .register => try self.handleRegister(req),
+            .prepare_upload => try self.handlePrepareUpload(req),
+            .upload => try self.handleUpload(req),
+            .cancel => try self.handleCancel(req),
+            .prepare_download => try self.handlePrepareDownload(req),
+            .download => try self.handleDownload(req),
         }
     }
 
     fn handleInfo(self: *Self, req: *std.http.Server.Request) !void {
         if (req.head.method != .GET) {
-            return self.sendResponse(req, .method_not_allowed, "text/plain", "Method Not Allowed");
+            return self.respond(req, .method_not_allowed, "text/plain", "Method Not Allowed");
         }
 
         const json = try std.json.Stringify.valueAlloc(self.allocator, self.device_info, .{});
         defer self.allocator.free(json);
 
-        try self.sendResponse(req, .ok, "application/json", json);
+        try self.respond(req, .ok, "application/json", json);
     }
 
     fn handleRegister(self: *Self, req: *std.http.Server.Request) !void {
         if (req.head.method != .POST) {
-            return self.sendResponse(req, .method_not_allowed, "text/plain", "Method Not Allowed");
+            return self.respond(req, .method_not_allowed, "text/plain", "Method Not Allowed");
         }
 
         // Get content length from headers
         const content_length = req.head.content_length orelse {
-            return self.sendResponse(req, .bad_request, "text/plain", "Missing Content-Length");
+            return self.respond(req, .bad_request, "text/plain", "Missing Content-Length");
         };
 
         // Read exact amount of body data
         var body_buf: [8192]u8 = undefined;
         if (content_length > body_buf.len) {
-            return self.sendResponse(req, .bad_request, "text/plain", "Request too large");
+            return self.respond(req, .bad_request, "text/plain", "Request too large");
         }
 
         const reader = req.readerExpectNone(&body_buf);
-        const body_data = body_buf[0..content_length];
-        try reader.readSliceAll(body_data);
+        // readSliceXX panic on @memcpy to the same buffer as reader
+        // we only need const slice here
+        const body_data = try reader.peek(content_length);
 
         const parsed = std.json.parseFromSlice(
             model.MultiCastDto,
@@ -199,7 +202,7 @@ pub const Server = struct {
             body_data,
             .{ .ignore_unknown_fields = true },
         ) catch {
-            return self.sendResponse(req, .bad_request, "text/plain", "Invalid JSON");
+            return self.respond(req, .bad_request, "text/plain", "Invalid JSON");
         };
         defer parsed.deinit();
 
@@ -208,17 +211,17 @@ pub const Server = struct {
         const json = try std.json.Stringify.valueAlloc(self.allocator, self.device_info, .{});
         defer self.allocator.free(json);
 
-        try self.sendResponse(req, .ok, "application/json", json);
+        try self.respond(req, .ok, "application/json", json);
     }
 
     fn handlePrepareUpload(self: *Self, req: *std.http.Server.Request) !void {
         if (req.head.method != .POST) {
-            return self.sendResponse(req, .method_not_allowed, "text/plain", "Method Not Allowed");
+            return self.respond(req, .method_not_allowed, "text/plain", "Method Not Allowed");
         }
 
         // Get content length
         const content_length = req.head.content_length orelse {
-            return self.sendResponse(req, .bad_request, "text/plain", "Missing Content-Length");
+            return self.respond(req, .bad_request, "text/plain", "Missing Content-Length");
         };
 
         // Read body with proper buffer size
@@ -316,43 +319,43 @@ pub const Server = struct {
         }
         try writer.writeAll("}}");
 
-        try self.sendResponse(req, .ok, "application/json", response_buf.items);
+        try self.respond(req, .ok, "application/json", response_buf.items);
     }
 
     fn handleUpload(self: *Self, req: *std.http.Server.Request) !void {
         if (req.head.method != .POST) {
-            return self.sendResponse(req, .method_not_allowed, "text/plain", "Method Not Allowed");
+            return self.respond(req, .method_not_allowed, "text/plain", "Method Not Allowed");
         }
 
         var query = try api.QueryParams.fromTarget(self.allocator, req.head.target);
         defer query.deinit();
 
         const session_id = query.get("sessionId") orelse {
-            return self.sendResponse(req, .bad_request, "text/plain", "Missing sessionId");
+            return self.respond(req, .bad_request, "text/plain", "Missing sessionId");
         };
         const file_id = query.get("fileId") orelse {
-            return self.sendResponse(req, .bad_request, "text/plain", "Missing fileId");
+            return self.respond(req, .bad_request, "text/plain", "Missing fileId");
         };
         const token = query.get("token") orelse {
-            return self.sendResponse(req, .bad_request, "text/plain", "Missing token");
+            return self.respond(req, .bad_request, "text/plain", "Missing token");
         };
 
         // Validate session
         const session = self.upload_sessions.get(session_id) orelse {
-            return self.sendResponse(req, .forbidden, "text/plain", "Invalid session");
+            return self.respond(req, .forbidden, "text/plain", "Invalid session");
         };
 
         const file_token = session.files.get(file_id) orelse {
-            return self.sendResponse(req, .forbidden, "text/plain", "Invalid fileId");
+            return self.respond(req, .forbidden, "text/plain", "Invalid fileId");
         };
 
         if (!std.mem.eql(u8, file_token.token, token)) {
-            return self.sendResponse(req, .forbidden, "text/plain", "Invalid token");
+            return self.respond(req, .forbidden, "text/plain", "Invalid token");
         }
 
         // Get content length
         const content_length = req.head.content_length orelse {
-            return self.sendResponse(req, .bad_request, "text/plain", "Missing Content-Length");
+            return self.respond(req, .bad_request, "text/plain", "Missing Content-Length");
         };
 
         // Read file data
@@ -373,19 +376,19 @@ pub const Server = struct {
 
         log.info("File saved: {s} ({d} bytes)", .{ filename, file_data.len });
 
-        try self.sendResponse(req, .ok, "text/plain", "");
+        try self.respond(req, .ok, "text/plain", "");
     }
 
     fn handleCancel(self: *Self, req: *std.http.Server.Request) !void {
         if (req.head.method != .POST) {
-            return self.sendResponse(req, .method_not_allowed, "text/plain", "Method Not Allowed");
+            return self.respond(req, .method_not_allowed, "text/plain", "Method Not Allowed");
         }
 
         var query = try api.QueryParams.fromTarget(self.allocator, req.head.target);
         defer query.deinit();
 
         const session_id = query.get("sessionId") orelse {
-            return self.sendResponse(req, .bad_request, "text/plain", "Missing sessionId");
+            return self.respond(req, .bad_request, "text/plain", "Missing sessionId");
         };
 
         if (self.upload_sessions.fetchRemove(session_id)) |kv| {
@@ -394,12 +397,12 @@ pub const Server = struct {
             log.info("Session cancelled: {s}", .{session_id});
         }
 
-        try self.sendResponse(req, .ok, "text/plain", "");
+        try self.respond(req, .ok, "text/plain", "");
     }
 
     fn handlePrepareDownload(self: *Self, req: *std.http.Server.Request) !void {
         if (req.head.method != .POST) {
-            return self.sendResponse(req, .method_not_allowed, "text/plain", "Method Not Allowed");
+            return self.respond(req, .method_not_allowed, "text/plain", "Method Not Allowed");
         }
 
         var query = try api.QueryParams.fromTarget(self.allocator, req.head.target);
@@ -412,7 +415,7 @@ pub const Server = struct {
         // Validate PIN if required
         if (self.device_info.download) |has_download| {
             if (has_download and pin == null) {
-                return self.sendResponse(req, .unauthorized, "text/plain", "PIN required");
+                return self.respond(req, .unauthorized, "text/plain", "PIN required");
             }
         }
 
@@ -437,31 +440,31 @@ pub const Server = struct {
         const json = try std.json.Stringify.valueAlloc(self.allocator, response, .{});
         defer self.allocator.free(json);
 
-        try self.sendResponse(req, .ok, "application/json", json);
+        try self.respond(req, .ok, "application/json", json);
     }
 
     fn handleDownload(self: *Self, req: *std.http.Server.Request) !void {
         if (req.head.method != .GET) {
-            return self.sendResponse(req, .method_not_allowed, "text/plain", "Method Not Allowed");
+            return self.respond(req, .method_not_allowed, "text/plain", "Method Not Allowed");
         }
 
         var query = try api.QueryParams.fromTarget(self.allocator, req.head.target);
         defer query.deinit();
 
         const session_id = query.get("sessionId") orelse {
-            return self.sendResponse(req, .bad_request, "text/plain", "Missing sessionId");
+            return self.respond(req, .bad_request, "text/plain", "Missing sessionId");
         };
         const file_id = query.get("fileId") orelse {
-            return self.sendResponse(req, .bad_request, "text/plain", "Missing fileId");
+            return self.respond(req, .bad_request, "text/plain", "Missing fileId");
         };
 
         // Validate session
         const session = self.download_sessions.get(session_id) orelse {
-            return self.sendResponse(req, .forbidden, "text/plain", "Invalid session");
+            return self.respond(req, .forbidden, "text/plain", "Invalid session");
         };
 
         const file_info = session.files.get(file_id) orelse {
-            return self.sendResponse(req, .forbidden, "text/plain", "Invalid fileId");
+            return self.respond(req, .forbidden, "text/plain", "Invalid fileId");
         };
 
         // Read and send file
@@ -469,7 +472,7 @@ pub const Server = struct {
         defer self.allocator.free(filename);
 
         const file = std.fs.cwd().openFile(filename, .{}) catch {
-            return self.sendResponse(req, .not_found, "text/plain", "File not found");
+            return self.respond(req, .not_found, "text/plain", "File not found");
         };
         defer file.close();
 
@@ -478,10 +481,10 @@ pub const Server = struct {
 
         log.info("File sent: {s} ({d} bytes)", .{ filename, file_data.len });
 
-        try self.sendResponse(req, .ok, "application/octet-stream", file_data);
+        try self.respond(req, .ok, "application/octet-stream", file_data);
     }
 
-    fn sendResponse(self: *Self, req: *std.http.Server.Request, status: std.http.Status, content_type: []const u8, body: []const u8) !void {
+    fn respond(self: *Self, req: *std.http.Server.Request, status: std.http.Status, content_type: []const u8, body: []const u8) !void {
         _ = self;
         try req.respond(body, .{
             .status = status,

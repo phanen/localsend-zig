@@ -202,7 +202,7 @@ pub const Manager = struct {
     allocator: std.mem.Allocator,
     last_cleanup_time: i64,
     client: Client,
-    // server: Server,
+    server: Server,
     registry: Registry,
     send_paths: []const []const u8,
     multicast: network.Multicast,
@@ -216,8 +216,8 @@ pub const Manager = struct {
         return .{
             .allocator = allocator,
             .last_cleanup_time = std.time.timestamp(),
-            .client = try .init(allocator, info),
-            // .server = try .init(allocator, info, Cons.SAVE_DIR),
+            .client = try .init(allocator, &info),
+            .server = try .init(allocator, &info),
             .registry = .init(allocator),
             .send_paths = paths,
             .multicast = try .init(try net.Address.parseIp(Cons.MULTICAST_IP, Cons.PORT)),
@@ -228,7 +228,7 @@ pub const Manager = struct {
     pub fn deinit(self: *Self) void {
         self.multicast.close();
         self.client.deinit();
-        // self.server.deinit();
+        self.server.deinit();
         self.registry.deinit();
         self.info.deinit(self.allocator);
     }
@@ -236,8 +236,7 @@ pub const Manager = struct {
     pub fn run(self: *Self) !void {
         // const thread = try std.Thread.spawn(.{}, listenMultiCast, .{self});
         _ = try std.Thread.spawn(.{}, listenMultiCast, .{self});
-        // const thread = try std.Thread.spawn(.{}, listenTcp, .{&self.server});
-        // thread.detach();
+        _ = try std.Thread.spawn(.{}, listenTcp, .{&self.server});
         // try self.listenMultiCast();
         // announce once
         // thread.join();

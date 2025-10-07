@@ -9,12 +9,12 @@ const log = std.log.scoped(.client);
 pub const Client = struct {
     allocator: std.mem.Allocator,
     http_client: http.Client,
-    info: model.MultiCastDto,
+    info: *const model.MultiCastDto,
     tls: bool,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, info: model.MultiCastDto) !Self {
+    pub fn init(allocator: std.mem.Allocator, info: *const model.MultiCastDto) !Self {
         return .{
             .allocator = allocator,
             .http_client = .{ .allocator = allocator },
@@ -43,7 +43,7 @@ pub const Client = struct {
         defer self.allocator.free(url);
         log.info("Prepare upload URL: {s}", .{url});
 
-        var prep = try model.PrepareUploadRequestDto.init(self.allocator, self.info, paths);
+        var prep = try model.PrepareUploadRequestDto.init(self.allocator, self.info.*, paths);
         defer prep.deinit(self.allocator);
 
         const payload = try std.json.Stringify.valueAlloc(self.allocator, prep, .{});
