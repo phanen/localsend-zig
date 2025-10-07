@@ -203,6 +203,7 @@ pub const Manager = struct {
     client: Client,
     registry: Registry,
     send_paths: []const []const u8,
+    multicast: network.Multicast,
 
     const Self = @This();
     const log = std.log.scoped(.manager);
@@ -214,39 +215,47 @@ pub const Manager = struct {
             .client = try .init(allocator),
             .registry = .init(allocator),
             .send_paths = paths,
+            .multicast = try .init(try net.Address.parseIp(Cons.MULTICAST_IP, Cons.PORT)),
         };
     }
 
     pub fn deinit(self: *Self) void {
+        self.multicast.close();
         self.client.deinit();
         self.registry.deinit();
     }
 
     pub fn run(self: *Self) !void {
+        // const thread = try std.Thread.spawn(.{}, listenMultiCast, .{self});
         _ = try std.Thread.spawn(.{}, listenMultiCast, .{self});
         // try self.listenMultiCast();
-        while (true) std.Thread.sleep(5 * std.time.ns_per_s);
+        // announce once
+        // thread.join();
+        while (true) {
+            try self.sendAnnouncement();
+            std.Thread.sleep(5 * std.time.ns_per_s);
+        }
+    }
+
+    pub fn sendAnnouncement(self: *const Self) !void {
+        const me = try std.json.Stringify.valueAlloc(self.allocator, self.client.info, .{});
+        defer self.allocator.free(me);
+        _ = try self.multicast.send(me);
     }
 
     const tlog = std.log.scoped(.discovery);
     fn listenMultiCast(self: *Self) !void {
-        var multicast = try network.Multicast.init(Cons.MULTICAST_IP, Cons.PORT);
-        const me_str = try std.json.Stringify.valueAlloc(self.allocator, self.client.info, .{});
-        defer self.allocator.free(me_str);
         while (true) {
-            var addr: posix.sockaddr = undefined;
             tlog.info("Waiting for peers...", .{});
-            const buf = try multicast.recv(&addr);
+            const buf, const addr = try self.multicast.recv();
             const parsed = try std.json.parseFromSlice(model.MultiCastDto, self.allocator, buf, .{});
             defer parsed.deinit();
             const peer_info = parsed.value;
 
             try self.cleanupStalePeers();
-            // _ = try multicast.send(me_str);
             const peer_announce = peer_info.announce orelse peer_info.announcement orelse false;
             if (peer_announce) {
-                const netaddr = net.Address.initPosix(@alignCast(&addr));
-                try self.handleAnnounce(peer_info, &netaddr);
+                try self.handleAnnounce(peer_info, &addr);
                 continue;
             }
             const peer = self.registry.getPeer(peer_info.fingerprint) orelse {

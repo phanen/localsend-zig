@@ -16,6 +16,27 @@ pub fn udpSend(buf: []const u8, dest_addr: *const posix.sockaddr) !usize {
     return bytes;
 }
 
+pub fn joinMulticastGroup(sock: posix.socket_t, addr: *const net.Address) !void {
+    switch (addr.any.family) {
+        posix.AF.INET => {
+            const request = netinet.ip_mreq{
+                .imr_multiaddr = .{ .s_addr = addr.in.sa.addr },
+                .imr_interface = .{ .s_addr = std.mem.nativeToBig(u32, netinet.INADDR_ANY) },
+            };
+            // TODO: use posix.ADD_MEMBERSHIP
+            try posix.setsockopt(sock, posix.IPPROTO.IP, std.os.linux.IP.ADD_MEMBERSHIP, &std.mem.toBytes(request));
+        },
+        posix.AF.INET6 => {
+            const request = netinet.ipv6_mreq{
+                .ipv6mr_multiaddr = .{ .__in6_u = .{ .__u6_addr8 = addr.in6.sa.addr } },
+                .ipv6mr_interface = std.mem.nativeToBig(u32, netinet.INADDR_ANY),
+            };
+            try posix.setsockopt(sock, posix.IPPROTO.IP, std.os.linux.IP.ADD_MEMBERSHIP, &std.mem.toBytes(request));
+        },
+        else => unreachable,
+    }
+}
+
 pub const Multicast = struct {
     const Self = @This();
     addr: net.Address,
@@ -24,8 +45,7 @@ pub const Multicast = struct {
     var recv_buf: [1024]u8 = undefined;
 
     const log = std.log.scoped(.multicast);
-    pub fn init(ip: []const u8, port: u16) !Self {
-        const addr = try net.Address.parseIp(ip, port);
+    pub fn init(addr: net.Address) !Self {
         const sock = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, 0);
         // Allow address reuse
         try posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
@@ -33,15 +53,9 @@ pub const Multicast = struct {
         // Bind to the multicast address
         try posix.bind(sock, &addr.any, addr.getOsSockLen());
 
-        // Join the multicast group
-        const request = netinet.ip_mreq{
-            .imr_multiaddr = netinet.struct_in_addr{ .s_addr = addr.in.sa.addr },
-            .imr_interface = netinet.struct_in_addr{ .s_addr = std.mem.nativeToBig(u32, netinet.INADDR_ANY) },
-        };
-        // TODO: use posix.ADD_MEMBERSHIP
-        try posix.setsockopt(sock, posix.IPPROTO.IP, std.os.linux.IP.ADD_MEMBERSHIP, &std.mem.toBytes(request));
+        try joinMulticastGroup(sock, &addr);
 
-        log.info("UDP socket initialized on {s}:{d}", .{ ip, port });
+        log.info("UDP socket initialized on {f}", .{addr});
         return .{ .addr = addr, .sock = sock };
     }
 
@@ -51,16 +65,17 @@ pub const Multicast = struct {
     }
 
     /// Receive a multicast packet
-    pub fn recv(self: *Self, src_addr: *posix.sockaddr) ![]const u8 {
+    pub fn recv(self: *const Self) !struct { []const u8, net.Address } {
         var addrlen: u32 = @sizeOf(posix.sockaddr);
-        const bytes = try posix.recvfrom(self.sock, &recv_buf, 0, src_addr, &addrlen);
-        const addr = net.Address.initPosix(@alignCast(src_addr));
+        var src_addr: posix.sockaddr = undefined;
+        const bytes = try posix.recvfrom(self.sock, &recv_buf, 0, &src_addr, &addrlen);
+        const addr = net.Address.initPosix(@alignCast(&src_addr));
         log.info("Received {d} bytes from {f}", .{ bytes, addr });
-        return recv_buf[0..bytes];
+        return .{ recv_buf[0..bytes], addr };
     }
 
     /// Send a packet to the multicast group
-    pub fn send(self: *Self, buf: []const u8) !usize {
+    pub fn send(self: *const Self, buf: []const u8) !usize {
         // Create a new UDP socket for sending
         const send_sock = try posix.socket(posix.AF.INET, posix.SOCK.DGRAM, 0);
         defer posix.close(send_sock);
