@@ -204,7 +204,19 @@ pub const InfoDto = struct {
     deviceType: ?[]const u8 = "headless",
     fingerprint: []const u8,
     download: ?bool = false,
+    pub fn fromMultiCastDto(info: *const MultiCastDto) @This() {
+        return .{
+            .alias = info.alias,
+            .version = info.version.?,
+            .deviceModel = info.deviceModel,
+            .deviceType = info.deviceType,
+            .fingerprint = info.fingerprint,
+            .download = true,
+        };
+    }
 };
+
+pub const RegisterResponseDto = InfoDto;
 
 /// Response for prepare-download endpoint (section 5.2 of protocol)
 pub const PrepareDownloadResponseDto = struct {

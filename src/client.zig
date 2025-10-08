@@ -127,7 +127,7 @@ pub const Client = struct {
         var buffer: std.Io.Writer.Allocating = .init(self.allocator);
         errdefer buffer.deinit();
         try buffer.ensureUnusedCapacity(64);
-        log.info("HTTP {s} {s} ({d} bytes)", .{ @tagName(method), url, payload.len });
+        log.info("{s} {s} ({d} bytes)", .{ @tagName(method), url, payload.len });
         const resp = try self.http_client.fetch(.{
             .method = method,
             .location = .{ .url = url },
@@ -136,7 +136,7 @@ pub const Client = struct {
             .response_writer = &buffer.writer,
         });
         const resp_body = try buffer.toOwnedSlice();
-        log.info("HTTP response status={}, body={s}", .{ resp.status, resp_body });
+        log.info("response status={}, body={s}", .{ resp.status, resp_body });
         return HttpResponse.init(self.allocator, resp.status, resp_body);
     }
 };

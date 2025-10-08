@@ -9,6 +9,7 @@ pub const Peer = struct {
     addr: net.Address,
     last_seen: i64, // Unix timestamp
     status: Status = .online,
+    last_cleanup_time: i64,
 
     const Self = @This();
 
@@ -22,6 +23,7 @@ pub const Peer = struct {
             .info = info,
             .addr = addr,
             .last_seen = std.time.timestamp(),
+            .last_cleanup_time = std.time.timestamp(),
         };
     }
 
@@ -136,10 +138,12 @@ pub const Registry = struct {
         return false;
     }
 
-    /// Clean up stale peers (not seen for a while)
+    /// Periodic cleanup wrapper that checks if it's time to run cleanup
     pub fn cleanupStalePeers(self: *Self) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
+        const now = std.time.timestamp();
+        if (now - self.last_cleanup_time <= Cons.CLEANUP_INTERVAL_SECONDS) return;
         var it = self.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.isStale(Cons.STALE_THRESHOLD_SECONDS)) {
@@ -147,6 +151,7 @@ pub const Registry = struct {
                 _ = self.removePeer(entry.value_ptr.info.fingerprint);
             }
         }
+        self.last_cleanup_time = now;
     }
 
     /// Get a peer by fingerprint

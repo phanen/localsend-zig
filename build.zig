@@ -18,6 +18,8 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addImport("xev", dep.module("xev"));
     if (b.lazyDependency("vaxis", .{ .target = t, .optimize = o })) |dep|
         exe.root_module.addImport("vaxis", dep.module("vaxis"));
+    if (b.lazyDependency("httpz", .{ .target = t, .optimize = o })) |dep|
+        exe.root_module.addImport("httpz", dep.module("httpz"));
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());

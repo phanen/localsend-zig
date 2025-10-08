@@ -22,7 +22,7 @@ pub const ApiRoute = enum {
     /// Get the v2 API path for this route
     pub fn path(self: ApiRoute) []const u8 {
         return switch (self) {
-            .info => "/api/localsend/v2/info",
+            .info => "/api/localsend/v1/info",
             .register => "/api/localsend/v2/register",
             .prepare_upload => "/api/localsend/v2/prepare-upload",
             .upload => "/api/localsend/v2/upload",
