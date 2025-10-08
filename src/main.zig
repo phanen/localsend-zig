@@ -1,5 +1,5 @@
 const std = @import("std");
-const discovery = @import("./discovery.zig");
+const Manager = @import("./Manager.zig");
 
 pub const Cons = struct {
     pub const PORT: u16 = 53317; // default multicast/tcp port
@@ -35,7 +35,7 @@ pub fn logFn(
 
 const log = std.log.scoped(.main);
 
-var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+var gpa: std.heap.DebugAllocator(.{}) = .init;
 const allocator = std.heap.page_allocator;
 
 pub fn main() !void {
@@ -48,7 +48,7 @@ pub fn main() !void {
     }
     const paths = args[1..];
     for (paths) |p| log.info("File to be sent: {s}", .{p});
-    var manager = try discovery.Manager.init(allocator, paths);
+    var manager = try Manager.init(allocator, paths);
     defer manager.deinit();
     try manager.run();
 }
