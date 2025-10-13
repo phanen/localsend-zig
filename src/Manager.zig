@@ -9,6 +9,7 @@ const Server = @import("./server.zig").Server;
 const Registry = @import("./peer.zig").Registry;
 const httpz = @import("httpz");
 const api = @import("./api.zig");
+const xev = @import("xev");
 
 allocator: std.mem.Allocator,
 client: Client,
@@ -17,6 +18,10 @@ registry: Registry,
 send_paths: []const []const u8,
 multicast: network.Multicast,
 
+loop: xev.Loop,
+announce_timer: xev.Timer,
+addr: net.Address,
+
 var info: model.MultiCastDto = undefined;
 
 const Self = @This();
@@ -24,13 +29,17 @@ const log = std.log.scoped(.manager);
 
 pub fn init(allocator: std.mem.Allocator, paths: []const []const u8) !Self {
     info = try model.MultiCastDto.init(allocator);
+    const addr = try net.Address.parseIp(Cons.MULTICAST_IP, Cons.PORT);
     return .{
         .allocator = allocator,
         .client = try .init(allocator, &info),
         .server = try .init(allocator, &info),
         .registry = .init(allocator),
         .send_paths = paths,
-        .multicast = try .init(try net.Address.parseIp(Cons.MULTICAST_IP, Cons.PORT)),
+        .multicast = try .init(addr),
+        .loop = try .init(.{}),
+        .announce_timer = try .init(),
+        .addr = addr,
     };
 }
 
@@ -40,21 +49,82 @@ pub fn deinit(self: *Self) void {
     self.server.deinit();
     self.registry.deinit();
     info.deinit(self.allocator);
+    self.announce_timer.deinit();
+    self.loop.deinit();
+}
+
+fn timerCallback(
+    self_: ?*Self,
+    loop: *xev.Loop,
+    c: *xev.Completion,
+    result: xev.Timer.RunError!void,
+) xev.CallbackAction {
+    _ = result catch unreachable;
+    const self = self_.?;
+    self.sendAnnounce() catch unreachable;
+    self.announce_timer.run(loop, c, 5000, Self, self, &timerCallback);
+    return .disarm;
 }
 
 pub fn run(self: *Self) !void {
-    _ = try std.Thread.spawn(.{}, listenMultiCast, .{self});
+    var c: xev.Completion = undefined;
+    self.announce_timer.run(&self.loop, &c, 500, Self, self, &timerCallback);
+    try self.listenMutliCastXev();
+    // _ = try std.Thread.spawn(.{}, listenMultiCast, .{self});
     _ = try std.Thread.spawn(.{}, listenHttpz, .{self});
+    try self.loop.run(.until_done);
     // _ = try std.Thread.spawn(.{}, listenRaw, .{self});
     // try self.listenHttpz();
-    while (true) {
-        try self.sendAnnounce();
-        std.Thread.sleep(5 * std.time.ns_per_s);
-    }
 }
 
 fn listenRaw(self: *Self) !void {
     self.server.listen() catch |err| log.err("Server error: {}", .{err});
+}
+
+fn listenMutliCastXev(self: *Self) !void {
+    log.info("Waiting for peers...", .{});
+    var c: xev.Completion = undefined;
+    var udp_state: xev.UDP.State = undefined;
+    var recv_buf: [65536]u8 = undefined;
+    var udp = try xev.UDP.init(self.addr);
+    try udp.bind(self.addr);
+    try network.joinMulticastGroup(udp.fd, &self.addr);
+    udp.read(&self.loop, &c, &udp_state, .{ .slice = &recv_buf }, Self, self, udpReadCallback);
+}
+
+fn udpReadCallback(
+    self_: ?*Self,
+    _: *xev.Loop,
+    _: *xev.Completion,
+    _: *xev.UDP.State,
+    addr: std.net.Address,
+    _: xev.UDP,
+    b: xev.ReadBuffer,
+    r: xev.ReadError!usize,
+) xev.CallbackAction {
+    const self = self_.?;
+    const n = r catch |err| {
+        switch (err) {
+            error.EOF => {},
+            else => std.log.warn("err={}", .{err}),
+        }
+
+        return .disarm;
+    };
+
+    // if (!std.mem.eql(u8, b.slice[0..n], EXPECTED)) @panic("Unexpected data.");
+    const buf = b.slice[0..n];
+    const parsed = std.json.parseFromSlice(model.MultiCastDto, self.allocator, buf, .{}) catch unreachable;
+    defer parsed.deinit();
+    const peer_info = parsed.value;
+    const peer_announce = peer_info.announce orelse peer_info.announcement orelse false;
+    if (peer_announce) self.handleAnnounce(peer_info, &addr) catch unreachable;
+    const peer = self.registry.getPeer(peer_info.fingerprint) orelse {
+        log.info("Unknown peer, skipping", .{});
+        return .rearm;
+    };
+    self.client.sendFiles(&peer.addr, self.send_paths) catch unreachable;
+    return .disarm;
 }
 
 fn listenMultiCast(self: *Self) !void {
@@ -79,6 +149,7 @@ fn listenMultiCast(self: *Self) !void {
 }
 
 // TODO: no alloc
+// FIXME: announce still don't work
 fn sendAnnounce(self: *const Self) !void {
     const me = try std.json.Stringify.valueAlloc(self.allocator, info, .{});
     defer self.allocator.free(me);
